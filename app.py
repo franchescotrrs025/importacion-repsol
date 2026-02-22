@@ -80,11 +80,16 @@ def cargar_activos(bytes_io):
     df = pd.read_excel(bytes_io)
     # Buscar columna de nombre
     col_nombre = next((c for c in df.columns if "NOMBRE" in c.upper()), None)
-    col_dni    = next((c for c in df.columns if "DOCUMENTO" in c.upper() or "DNI" in c.upper()), None)
+    # Buscar columna de número de documento (excluir TIPO_DOCUMENTO)
+    col_dni = next((c for c in df.columns if "NRO" in c.upper() and "DOCUMENTO" in c.upper()), None)
+    if col_dni is None:
+        col_dni = next((c for c in df.columns if "DOCUMENTO" in c.upper() and "TIPO" not in c.upper()), None)
+    if col_dni is None:
+        col_dni = next((c for c in df.columns if "DNI" in c.upper()), None)
     if not col_nombre or not col_dni:
-        raise ValueError(f"El archivo de Activos debe tener columnas de NOMBRE y DOCUMENTO. Columnas encontradas: {list(df.columns)}")
+        raise ValueError(f"No se encontraron columnas de NOMBRE y DOCUMENTO. Columnas: {list(df.columns)}")
     df["_nc"] = (df[col_nombre].astype(str).str.upper().str.strip()
-                 .str.replace(r"[,.\-]","",regex=True).str.replace(r"\s+"," ",regex=True))
+                 .str.replace(r"[,.]", "", regex=True).str.replace(r"\s+", " ", regex=True))
     df["_dni"] = df[col_dni].astype(str).str.strip()
     return df
 
@@ -92,12 +97,31 @@ def buscar_dni(nombre, activos_df):
     n = re.sub(r"[,.\-]","", str(nombre).upper().strip())
     n = re.sub(r"\s+"," ", n).strip()
     if not n or n in ["NAN",""]: return "NO ENCONTRADO"
+
+    # 1. Búsqueda exacta
     m = activos_df[activos_df["_nc"]==n]
     if not m.empty: return m.iloc[0]["_dni"]
+
+    # 2. Palabras exactas (mismo conjunto)
     palabras = set(n.split())
     for _, row in activos_df.iterrows():
         if len(palabras)>=2 and palabras==set(row["_nc"].split()):
             return row["_dni"]
+
+    # 3. Todas las palabras del nombre están contenidas en el activo (nombre más largo)
+    for _, row in activos_df.iterrows():
+        palabras_activo = set(row["_nc"].split())
+        if len(palabras)>=2 and palabras.issubset(palabras_activo):
+            return row["_dni"]
+
+    # 4. Al menos 3 palabras coinciden (nombres con diferencias menores)
+    if len(palabras) >= 2:
+        for _, row in activos_df.iterrows():
+            palabras_activo = set(row["_nc"].split())
+            coincidencias = palabras & palabras_activo
+            if len(coincidencias) >= min(3, len(palabras)):
+                return row["_dni"]
+
     return "NO ENCONTRADO"
 
 def es_nombre_valido(texto):
