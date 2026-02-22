@@ -125,8 +125,24 @@ def buscar_dni(nombre, activos_df):
             return row["NRO_ DOCUMENTO"]
     return "NO ENCONTRADO"
 
+def detectar_hoja(guardias_bytes, keywords):
+    """Busca la hoja cuyo nombre contenga alguna keyword (sin importar mayúsculas/espacios)."""
+    try:
+        xl = pd.ExcelFile(guardias_bytes)
+        hojas = xl.sheet_names
+    except:
+        return None
+    for hoja in hojas:
+        if any(k.lower() in hoja.lower() for k in keywords):
+            return hoja
+    return None
+
 def cargar_pax(guardias_bytes):
-    pax_raw = pd.read_excel(guardias_bytes, sheet_name="Pax SDX - NM", header=None)
+    hoja_pax = detectar_hoja(guardias_bytes, ["pax", "sdx", "personal"])
+    if hoja_pax is None:
+        xl = pd.ExcelFile(guardias_bytes)
+        raise ValueError(f"No se encontró la hoja de personal (Pax SDX - NM).\nHojas disponibles: {xl.sheet_names}")
+    pax_raw = pd.read_excel(guardias_bytes, sheet_name=hoja_pax, header=None)
     pax_map = {}; sec = None
     for _, row in pax_raw.iterrows():
         c1 = str(row[1]).strip().upper() if pd.notna(row[1]) else ""
@@ -140,7 +156,15 @@ def cargar_pax(guardias_bytes):
     return pax_map
 
 def parsear_hoja(guardias_bytes, hoja, sec_pax, pax_map, pax_ptr, activos_df):
-    df = pd.read_excel(guardias_bytes, sheet_name=hoja, header=None)
+    # Buscar hoja por nombre exacto o aproximado
+    xl = pd.ExcelFile(guardias_bytes)
+    hoja_real = hoja  # default
+    for h in xl.sheet_names:
+        if h.strip().upper() == hoja.strip().upper():
+            hoja_real = h; break
+    if hoja_real not in xl.sheet_names:
+        return []  # Hoja no encontrada, saltar
+    df = pd.read_excel(guardias_bytes, sheet_name=hoja_real, header=None)
     resultados=[]; i=0
     while i<len(df):
         row=df.iloc[i]
@@ -334,6 +358,14 @@ if f_guardias and f_activos:
             todas, fechas_ord, activos_df = procesar(guardias_bytes, activos_bytes)
         except Exception as ex:
             st.error(f"❌ Error al procesar los archivos: {ex}")
+            # Mostrar hojas disponibles para ayudar al diagnóstico
+            try:
+                guardias_bytes.seek(0)
+                xl = pd.ExcelFile(guardias_bytes)
+                st.warning(f"📋 Hojas encontradas en tu archivo de guardias: {xl.sheet_names}")
+                st.info("Verificá que el archivo tenga las hojas: CATERING, HOTELERIA, ADM - LOG, Pax SDX - NM")
+            except:
+                pass
             st.stop()
 
     if not todas:
