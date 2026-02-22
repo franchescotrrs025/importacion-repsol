@@ -1,6 +1,7 @@
 import streamlit as st
 import pandas as pd
 import re, io
+from difflib import SequenceMatcher
 from datetime import date, datetime, timedelta
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -91,36 +92,75 @@ def cargar_activos(bytes_io):
     df["_nc"] = (df[col_nombre].astype(str).str.upper().str.strip()
                  .str.replace(r"[,.]", "", regex=True).str.replace(r"\s+", " ", regex=True))
     df["_dni"] = df[col_dni].astype(str).str.strip()
+    # Versión normalizada (sin tildes, ñ→n) para búsqueda aproximada
+    import unicodedata
+    def norm_col(t):
+        t2 = re.sub(r"[,.]", "", str(t).upper().strip())
+        t2 = re.sub(r"\s+", " ", t2).strip()
+        t3 = unicodedata.normalize("NFKD", t2).encode("ascii","ignore").decode("ascii")
+        return t3.strip()
+    df["_nc_norm"] = df["_nc"].apply(norm_col)
     return df
 
-def buscar_dni(nombre, activos_df):
-    n = re.sub(r"[,.\-]","", str(nombre).upper().strip())
-    n = re.sub(r"\s+"," ", n).strip()
-    if not n or n in ["NAN",""]: return "NO ENCONTRADO"
+def normalizar(texto):
+    """Normaliza texto: quita comas/puntos, espacios extra y reemplaza Ñ→N, tildes→sin tilde."""
+    import unicodedata
+    t = re.sub(r"[,.]", "", str(texto).upper().strip())
+    t = re.sub(r"\s+", " ", t).strip()
+    # Normalizar caracteres especiales (Ñ→N, tildes, etc.)
+    t_norm = unicodedata.normalize("NFKD", t)
+    t_ascii = t_norm.encode("ascii", "ignore").decode("ascii")
+    return t_ascii.strip()
 
-    # 1. Búsqueda exacta
-    m = activos_df[activos_df["_nc"]==n]
+def buscar_dni(nombre, activos_df):
+    n      = normalizar(nombre)
+    n_orig = re.sub(r"[,.]", "", str(nombre).upper().strip())
+    n_orig = re.sub(r"\s+", " ", n_orig).strip()
+
+    if not n or n in ["NAN", ""]: return "NO ENCONTRADO"
+
+    # 1. Búsqueda exacta (con y sin normalización)
+    m = activos_df[activos_df["_nc"] == n_orig]
+    if not m.empty: return m.iloc[0]["_dni"]
+    m = activos_df[activos_df["_nc_norm"] == n]
     if not m.empty: return m.iloc[0]["_dni"]
 
-    # 2. Palabras exactas (mismo conjunto)
-    palabras = set(n.split())
+    # 2. Mismo conjunto de palabras
+    palabras      = set(n.split())
+    palabras_orig = set(n_orig.split())
     for _, row in activos_df.iterrows():
-        if len(palabras)>=2 and palabras==set(row["_nc"].split()):
+        pa = set(row["_nc"].split())
+        pa_n = set(row["_nc_norm"].split())
+        if len(palabras_orig) >= 2 and palabras_orig == pa: return row["_dni"]
+        if len(palabras) >= 2     and palabras == pa_n:     return row["_dni"]
+
+    # 3. Todas las palabras del guardia están en el activo (nombre más largo)
+    for _, row in activos_df.iterrows():
+        pa_n = set(row["_nc_norm"].split())
+        if len(palabras) >= 2 and palabras.issubset(pa_n):
             return row["_dni"]
 
-    # 3. Todas las palabras del nombre están contenidas en el activo (nombre más largo)
-    for _, row in activos_df.iterrows():
-        palabras_activo = set(row["_nc"].split())
-        if len(palabras)>=2 and palabras.issubset(palabras_activo):
-            return row["_dni"]
-
-    # 4. Al menos 3 palabras coinciden (nombres con diferencias menores)
+    # 4. Al menos 3 palabras en común (tolerancia a diferencias)
     if len(palabras) >= 2:
         for _, row in activos_df.iterrows():
-            palabras_activo = set(row["_nc"].split())
-            coincidencias = palabras & palabras_activo
-            if len(coincidencias) >= min(3, len(palabras)):
+            pa_n = set(row["_nc_norm"].split())
+            if len(palabras & pa_n) >= min(3, len(palabras)):
                 return row["_dni"]
+
+    # 5. Comparar sin espacios (cubre errores de tipeo como "CHAPO AN" vs "CHAPONAN")
+    n_sin_esp = n.replace(" ", "")
+    for _, row in activos_df.iterrows():
+        if row["_nc_norm"].replace(" ", "") == n_sin_esp:
+            return row["_dni"]
+
+    # 6. Similitud alta (>= 85%) — cubre errores de tipeo graves como Ñ→N con espacio
+    mejor_score = 0; mejor_dni = "NO ENCONTRADO"
+    for _, row in activos_df.iterrows():
+        score = SequenceMatcher(None, n_sin_esp, row["_nc_norm"].replace(" ","")).ratio()
+        if score > mejor_score:
+            mejor_score = score; mejor_dni = row["_dni"]
+    if mejor_score >= 0.88:
+        return mejor_dni
 
     return "NO ENCONTRADO"
 
